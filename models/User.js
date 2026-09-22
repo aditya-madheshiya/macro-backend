@@ -1,0 +1,55 @@
+const mongoose = require('mongoose');
+
+const userSchema = new mongoose.Schema({
+  firstName: {
+    type: String,
+    required: true,
+    trim: true
+  },
+  lastName: {
+    type: String,
+    trim: true,
+    default: ''
+  },
+  email: {
+    type: String,
+    required: true,
+    unique: true,
+    trim: true,
+    lowercase: true
+  },
+  password: {
+    type: String,
+    required: true
+  },
+  role: {
+    type: String,
+    enum: ['user', 'admin'],
+    default: 'user'
+  },
+  // 🛒 कार्ट एरे (फोटो मॉडल्स की आईडी स्टोर करने के लिए)
+  cart: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Photo'
+  }],
+  // 🖼️ विशलिस्ट/लाइक्स एरे
+  likedPhotos: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Photo'
+  }],
+  // ⚡ खरीदी हुई तस्वीरें (Purchased Assets)
+  purchased: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Photo'
+  }],
+  // 💳 फोटोग्राफर का पेआउट सेटलमेंट वॉलेट एड्रेस
+  upiId: {
+    type: String,
+    trim: true,
+    default: ''
+  }
+}, {
+  timestamps: true // इससे createdAt और updatedAt ऑटोमैटिक बन जाते हैं
+});
+
+module.exports = mongoose.model('User', userSchema);
