@@ -4,8 +4,7 @@ const multer = require('multer');
 const cloudinary = require('cloudinary').v2;
 const Photo = require('../models/Photo');
 
-// 🔒 टोकन वेरिफिकेशन मिडलवेयर इम्पोर्ट करें (पाथ अपने प्रोजेक्ट के हिसाब से चेक कर लेना)
-// 🎯 फिक्स: verifyToken की जगह अब सीधे auth.js को इम्पोर्ट करें
+// 🔒 टोकन वेरिफिकेशन मिडलवेयर इम्पोर्ट करें
 const verifyToken = require('../middleware/auth'); 
 
 // ⚙️ 1. Cloudinary कॉन्फ़िगरेशन
@@ -19,7 +18,7 @@ cloudinary.config({
 const storage = multer.memoryStorage();
 const upload = multer({ storage: storage });
 
-// 🚀 3. PHOTO UPLOAD ENDPOINT (अब verifyToken के साथ सेफ है)
+// 🚀 3. PHOTO UPLOAD ENDPOINT
 router.post('/upload', verifyToken, upload.single('image'), async (req, res) => {
   try {
     const { title, category, price, magnification } = req.body;
@@ -57,16 +56,13 @@ router.post('/upload', verifyToken, upload.single('image'), async (req, res) => 
       category,
       price,
       magnification: magnification || "Macro Shot",
-      imageUrl: cloudinaryResult.secure_url, // Cloudinary का लाइव और पक्का URL
-      
-      // ⚡ महा फिक्स: अब डमी आईडी हमेशा के लिए खत्म! लॉगिन यूजर की असली आईडी सेव होगी
-      uploadedBy: rawId.toString().trim(), 
-      
+      imageUrl: cloudinaryResult.secure_url,
+      uploadedBy: rawId, // ⚡ ObjectId sidhe save hoga (User model se relation)
       views: 0
     });
 
     await newPhoto.save();
-    return res.status(201).json({ success: true, message: 'Asset uploaded to Cloudinary & DB!' });
+    return res.status(201).json({ success: true, message: 'Asset uploaded to Cloudinary & DB!', photo: newPhoto });
 
   } catch (err) {
     console.error("Cloudinary Upload Error:", err);
@@ -74,10 +70,13 @@ router.post('/upload', verifyToken, upload.single('image'), async (req, res) => 
   }
 });
 
-// 🖼️ 4. GET ALL PHOTOS FOR EXPLORE GALLERY
+// 🖼️ 4. GET ALL PHOTOS FOR EXPLORE GALLERY (User Details ke sath)
 router.get('/explore-live', async (req, res) => {
   try {
-    const photos = await Photo.find().sort({ createdAt: -1 });
+    const photos = await Photo.find()
+      .populate('uploadedBy', 'name fullName firstName lastName')
+      .sort({ createdAt: -1 });
+
     return res.status(200).json(photos);
   } catch (err) {
     return res.status(500).json({ message: 'Error fetching explore stream' });

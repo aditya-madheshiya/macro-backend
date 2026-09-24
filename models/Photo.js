@@ -23,7 +23,8 @@ const PhotoSchema = new mongoose.Schema({
     required: true
   },
   uploadedBy: {
-    type: String, // अभी टेस्टिंग के लिए हम डमी स्ट्रिंग आईडी भेज रहे हैं
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User', // ⚡ Seedhe User model se link ho gaya
     required: true
   },
   views: {
