@@ -3,6 +3,7 @@ const router = express.Router();
 const jwt = require('jsonwebtoken');
 const Photo = require('../models/Photo');
 const User = require('../models/User');
+const Order = require('../models/Order');
 const mongoose = require('mongoose');
 const cloudinary = require('cloudinary').v2;
 
@@ -24,41 +25,83 @@ const verifyToken = (req, res, next) => {
 };
 
 // =========================================================================
-// 📊 GET DASHBOARD SUMMARY (🎯 महा फिक्स: एडमिन के लिए टोटल प्लेटफॉर्म रेवेन्यू)
+// 📊 GET DASHBOARD SUMMARY (एडमिन + यूजर रेवेन्यू + डेटा रिकवरी)
 // =========================================================================
 router.get('/dashboard-summary', verifyToken, async (req, res) => {
   try {
     const userId = req.user.id || req.user._id;
-    const user = await User.findById(userId);
+    const user = await User.findById(userId)
+      .populate('purchased')
+      .populate('purchasedPhotos');
+
     if (!user) return res.status(404).json({ message: 'User not found' });
 
     const liveLikedCount = user.likedPhotos ? user.likedPhotos.length : 0;
-    const livePurchasedCount = user.purchased ? user.purchased.length : 0;
-    const Order = mongoose.model('Order'); 
+
+    // 🎯 दोनों एरे को सुरक्षित तरीके से मर्ज करें ताकि पुराने और नए दोनों एसेट्स आएँ
+    const rawPurchased = [
+      ...(user.purchased || []),
+      ...(user.purchasedPhotos || [])
+    ];
+
+    const uniqueMap = new Map();
+    rawPurchased.forEach(item => {
+      if (!item) return;
+      const id = (item._id || item).toString();
+      if (!uniqueMap.has(id)) {
+        uniqueMap.set(id, item);
+      }
+    });
+
+    const uniquePurchasedList = Array.from(uniqueMap.values());
+    const livePurchasedCount = uniquePurchasedList.length;
 
     let liveTotalSpent = 0;
 
-    // 🎯 चेक करें कि क्या लॉगिन करने वाला यूजर एडमिन है
     if (user.role === 'admin') {
-      // 👑 एडमिन के लिए: डेटाबेस के सभी यूज़र्स के सभी सफल ऑर्डर्स को खोजें और जोड़ें
+      // 👑 एडमिन के लिए: सभी सफल ऑर्डर्स को जोड़ें
       const allCompletedOrders = await Order.find({ paymentStatus: 'completed' });
-      allCompletedOrders.forEach(order => {
-        liveTotalSpent += order.totalAmount || 0;
-      });
+      if (allCompletedOrders.length > 0) {
+        allCompletedOrders.forEach(order => {
+          liveTotalSpent += Number(order.totalAmount) || 0;
+        });
+      } else {
+        // फॉलबैक: अगर पुराने ऑर्डर्स डेटाबेस में नहीं बने थे, तो खरीदे गए एसेट्स से जोड़ें
+        const allUsers = await User.find({}).populate('purchased').populate('purchasedPhotos');
+        allUsers.forEach(u => {
+          const userItems = [...(u.purchased || []), ...(u.purchasedPhotos || [])];
+          userItems.forEach(p => {
+            if (p && p.price) {
+              const num = parseFloat(String(p.price).replace(/[^0-9.]/g, '')) || 0;
+              liveTotalSpent += num;
+            }
+          });
+        });
+      }
     } else {
-      // 👤 नॉर्मल यूजर के लिए: सिर्फ उसका खुद का कुल खर्च जोड़ें
+      // 👤 नॉर्मल यूजर के लिए: उसके खुद के सफल ऑर्डर्स जोड़ें
       const userOrders = await Order.find({ user: userId, paymentStatus: 'completed' });
-      userOrders.forEach(order => {
-        liveTotalSpent += order.totalAmount || 0;
-      });
+      if (userOrders.length > 0) {
+        userOrders.forEach(order => {
+          liveTotalSpent += Number(order.totalAmount) || 0;
+        });
+      } else {
+        // फॉलबैक: अगर Order रिकॉर्ड नहीं बना था, तो फ़ोटो प्राइस से जोड़ें
+        uniquePurchasedList.forEach(p => {
+          if (p && p.price) {
+            const num = parseFloat(String(p.price).replace(/[^0-9.]/g, '')) || 0;
+            liveTotalSpent += num;
+          }
+        });
+      }
     }
 
     return res.status(200).json({
-      userName: `${user.firstName} ${user.lastName || ''}`,
+      userName: `${user.firstName} ${user.lastName || ''}`.trim(),
       purchasedCount: livePurchasedCount,       
       downloadsCount: livePurchasedCount,       
       likedCount: liveLikedCount,               
-      totalSpent: liveTotalSpent.toFixed(2) // 🎯 एडमिन के लिए यह कुल प्लेटफॉर्म सेल बन जाएगा
+      totalSpent: liveTotalSpent.toFixed(2)
     });
 
   } catch (err) {
@@ -72,11 +115,19 @@ router.get('/dashboard-summary', verifyToken, async (req, res) => {
 // ===================================================
 router.get('/profile', verifyToken, async (req, res) => {
   try {
-    const user = await User.findById(req.user.id).select('-password');
+    const user = await User.findById(req.user.id || req.user._id).select('-password');
     
     if (!user) {
       return res.status(404).json({ message: 'User not found' });
     }
+
+    // 🎯 दोनों एरे को कंबाइन करके यूनिक IDs तैयार करें
+    const allPurchased = [
+      ...(user.purchased || []),
+      ...(user.purchasedPhotos || [])
+    ].map(id => (id?._id || id).toString());
+
+    const uniquePurchasedIds = [...new Set(allPurchased)];
 
     return res.status(200).json({
       firstName: user.firstName,
@@ -84,6 +135,7 @@ router.get('/profile', verifyToken, async (req, res) => {
       email: user.email,
       role: user.role,
       upiId: user.upiId || '', 
+      purchasedPhotos: uniquePurchasedIds,
       createdAt: user.createdAt
     });
   } catch (err) {
@@ -93,11 +145,39 @@ router.get('/profile', verifyToken, async (req, res) => {
 });
 
 // ===================================================
+// 📦 GET USER PURCHASED PHOTOS
+// ===================================================
+router.get('/purchased-photos', verifyToken, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id || req.user._id)
+      .populate('purchasedPhotos')
+      .populate('purchased');
+
+    if (!user) return res.status(404).json({ message: 'User not found' });
+
+    const all = [...(user.purchasedPhotos || []), ...(user.purchased || [])];
+    const uniqueMap = new Map();
+    all.forEach(item => {
+      if (!item) return;
+      const id = (item._id || item).toString();
+      if (!uniqueMap.has(id)) {
+        uniqueMap.set(id, item);
+      }
+    });
+
+    return res.status(200).json(Array.from(uniqueMap.values()));
+  } catch (err) {
+    console.error("Purchased Photos Fetch Error:", err);
+    return res.status(500).json({ message: 'Error fetching purchased items' });
+  }
+});
+
+// ===================================================
 // 🎯 1. GET USER WISHLIST PHOTOS
 // ===================================================
 router.get('/wishlist', verifyToken, async (req, res) => {
   try {
-    const user = await User.findById(req.user.id).populate('likedPhotos');
+    const user = await User.findById(req.user.id || req.user._id).populate('likedPhotos');
     if (!user) return res.status(404).json({ message: 'User not found' });
     
     const wishlistItems = user.likedPhotos || [];
@@ -113,10 +193,10 @@ router.get('/wishlist', verifyToken, async (req, res) => {
 // ===================================================
 router.delete('/wishlist/:photoId', verifyToken, async (req, res) => {
   try {
-    const user = await User.findById(req.user.id);
+    const user = await User.findById(req.user.id || req.user._id);
     if (!user) return res.status(404).json({ message: 'User not found' });
 
-    user.likedPhotos = user.likedPhotos.filter(id => id.toString() !== req.params.photoId);
+    user.likedPhotos = (user.likedPhotos || []).filter(id => id.toString() !== req.params.photoId);
     await user.save();
 
     return res.status(200).json({ success: true, message: 'Removed from wishlist' });
@@ -137,7 +217,7 @@ router.post('/wishlist/add', verifyToken, async (req, res) => {
 
     if (!user.likedPhotos) user.likedPhotos = [];
 
-    if (user.likedPhotos.includes(photoId.toString())) {
+    if (user.likedPhotos.some(id => id.toString() === photoId.toString())) {
       return res.status(200).json({ success: true, message: 'Already in wishlist matrix' });
     }
 
@@ -167,7 +247,7 @@ router.delete('/photos/:photoId', verifyToken, async (req, res) => {
       return res.status(404).json({ message: 'Photo asset not found' });
     }
 
-    if (photo.uploadedBy.toString() !== userId.toString() && userRole !== 'admin') {
+    if (photo.uploadedBy && photo.uploadedBy.toString() !== userId.toString() && userRole !== 'admin') {
       return res.status(403).json({ message: 'Unauthorized deletion attempt' });
     }
 
@@ -178,10 +258,9 @@ router.delete('/photos/:photoId', verifyToken, async (req, res) => {
         const fileNameWithExt = urlParts[urlParts.length - 1]; 
         const publicId = `${folderName}/${fileNameWithExt.split('.')[0]}`; 
 
-        console.log("Cloudinary से इस ID को डिलीट कर रहे हैं:", publicId);
         await cloudinary.uploader.destroy(publicId);
       } catch (cloudinaryErr) {
-        console.error("Cloudinary से डिलीट करने में दिक्कत आई, पर DB से हटा रहे हैं:", cloudinaryErr);
+        console.error("Cloudinary error, continuing DB removal:", cloudinaryErr);
       }
     }
 
@@ -204,7 +283,6 @@ router.get('/my-uploads', verifyToken, async (req, res) => {
     }
 
     const userId = rawId.toString().trim(); 
-
     const checkUser = await User.findById(userId);
     const userRole = checkUser ? checkUser.role : 'user'; 
 
@@ -228,7 +306,7 @@ router.get('/my-uploads', verifyToken, async (req, res) => {
 });
 
 // ===================================================
-// 🛒 1. ADD PHOTO TO CART (WITH SECURITY CHECK)
+// 🛒 1. ADD PHOTO TO CART (SECURITY + ALREADY PURCHASED CHECK)
 // ===================================================
 router.post('/cart/add', verifyToken, async (req, res) => {
   try {
@@ -240,6 +318,7 @@ router.post('/cart/add', verifyToken, async (req, res) => {
       return res.status(404).json({ message: 'तस्वीर मार्केटप्लेस में नहीं मिली।' });
     }
 
+    // 🛑 1. खुद की फोटो खरीदने से रोकें
     if (photo.uploadedBy && photo.uploadedBy.toString() === userId.toString()) {
       return res.status(400).json({ 
         success: false, 
@@ -250,10 +329,27 @@ router.post('/cart/add', verifyToken, async (req, res) => {
     const user = await User.findById(userId);
     if (!user) return res.status(404).json({ message: 'User not found' });
 
+    // 🛑 2. पहले से खरीदी हुई दोनों फ़ील्ड्स में चेक करें
+    const allPurchased = [
+      ...(user.purchased || []),
+      ...(user.purchasedPhotos || [])
+    ].map(id => (id?._id || id).toString());
+
+    if (allPurchased.includes(photoId.toString())) {
+      return res.status(400).json({
+        success: false,
+        message: '⚠️ यह एसेट आप पहले ही खरीद चुके हैं! यह आपके डैशबोर्ड में अनलॉक है।'
+      });
+    }
+
     if (!user.cart) user.cart = [];
 
-    if (user.cart.includes(photoId.toString())) {
-      return res.status(400).json({ message: 'यह एसेट पहले से ही आपकी CART में है!' });
+    // 🛑 3. कार्ट में डुप्लीकेट रोकें
+    if (user.cart.some(id => id.toString() === photoId.toString())) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'यह एसेट पहले से ही आपकी CART में है!' 
+      });
     }
 
     user.cart.push(photoId);
@@ -267,14 +363,26 @@ router.post('/cart/add', verifyToken, async (req, res) => {
 });
 
 // ===================================================
-// 📊 2. GET LIVE CART ITEMS
+// 📊 2. GET LIVE CART ITEMS (AUTO REMOVES ALREADY PURCHASED)
 // ===================================================
 router.get('/cart', verifyToken, async (req, res) => {
   try {
     const user = await User.findById(req.user.id || req.user._id).populate('cart');
     if (!user) return res.status(404).json({ message: 'User not found' });
 
-    return res.status(200).json(user.cart || []);
+    const allPurchased = [
+      ...(user.purchased || []),
+      ...(user.purchasedPhotos || [])
+    ].map(id => (id?._id || id).toString());
+    
+    // अगर कोई खरीदा हुआ आइटम अभी भी कार्ट में अटका हो, तो उसे फ़िल्टर करें
+    const validCartItems = (user.cart || []).filter(item => {
+      if (!item) return false;
+      const itemId = (item._id || item).toString();
+      return !allPurchased.includes(itemId);
+    });
+
+    return res.status(200).json(validCartItems);
   } catch (err) {
     return res.status(500).json({ message: 'Error fetching cart' });
   }
@@ -290,12 +398,164 @@ router.delete('/cart/:photoId', verifyToken, async (req, res) => {
 
     if (!user) return res.status(404).json({ message: 'User not found' });
 
-    user.cart = user.cart.filter(id => id.toString() !== photoId.toString());
+    user.cart = (user.cart || []).filter(id => id.toString() !== photoId.toString());
     await user.save();
 
     return res.status(200).json({ success: true, message: 'Removed from cart' });
   } catch (err) {
     return res.status(500).json({ message: 'Error removing from cart' });
+  }
+});
+
+// ===================================================
+// 📜 GET USER'S ORDER HISTORY
+// ===================================================
+router.get('/my-orders', verifyToken, async (req, res) => {
+  try {
+    const userId = req.user.id || req.user._id;
+
+    const orders = await Order.find({ user: userId })
+      .populate('photos')
+      .populate('items.photoId')
+      .sort({ createdAt: -1 });
+
+    return res.status(200).json(orders);
+  } catch (err) {
+    console.error("Fetch Orders Error:", err);
+    return res.status(500).json({ message: 'Error fetching order history' });
+  }
+});
+
+// =========================================================================
+// 📈 GET CREATOR / ADMIN OWN SALES LOG (100% Guaranteed Data Sync & Fallback)
+// =========================================================================
+router.get('/creator-sales', verifyToken, async (req, res) => {
+  try {
+    const rawUserId = req.user.id || req.user._id;
+    const userIdStr = rawUserId.toString().trim();
+
+    // 1. इस यूजर की अपलोड की हुई तस्वीरें निकालें (String और ObjectId दोनों मैचिंग)
+    const allPhotos = await Photo.find({});
+    const myPhotos = allPhotos.filter(p => {
+      if (!p.uploadedBy) return false;
+      const creatorId = (p.uploadedBy._id || p.uploadedBy).toString().trim();
+      return creatorId === userIdStr;
+    });
+
+    const myPhotoIds = myPhotos.map(p => p._id.toString());
+
+    if (myPhotoIds.length === 0) {
+      return res.status(200).json({
+        totalEarned: "0.00",
+        soldItemsCount: 0,
+        salesLog: []
+      });
+    }
+
+    const salesLog = [];
+    let myTotalEarned = 0;
+
+    // 2. ऑर्डर्स कलेक्शन से चेक करें
+    const orders = await Order.find({ paymentStatus: 'completed' })
+      .populate('user', 'firstName lastName email')
+      .populate('photos')
+      .populate('items.photoId')
+      .sort({ createdAt: -1 });
+
+    if (orders.length > 0) {
+      orders.forEach(order => {
+        // Items array चेक करें
+        if (order.items && order.items.length > 0) {
+          order.items.forEach(item => {
+            const photoObj = item.photoId;
+            const pId = (photoObj?._id || photoObj)?.toString();
+
+            if (myPhotoIds.includes(pId)) {
+              const price = Number(item.price) || 0;
+              myTotalEarned += price;
+              salesLog.push({
+                orderId: order._id,
+                photoTitle: photoObj?.title || "Macro Asset",
+                photoUrl: photoObj?.imageUrl,
+                buyerName: `${order.user?.firstName || 'Buyer'} ${order.user?.lastName || ''}`.trim(),
+                buyerEmail: order.user?.email || 'N/A',
+                amount: price,
+                date: order.createdAt
+              });
+            }
+          });
+        }
+
+        // Direct photos array चेक करें (अगर items में डेटा न हो)
+        if (order.photos && order.photos.length > 0) {
+          order.photos.forEach(photoObj => {
+            const pId = (photoObj?._id || photoObj)?.toString();
+            const alreadyAdded = salesLog.some(
+              s => s.orderId.toString() === order._id.toString() && s.photoTitle === photoObj.title
+            );
+
+            if (myPhotoIds.includes(pId) && !alreadyAdded) {
+              const price = parseFloat(String(photoObj?.price || '0').replace(/[^0-9.]/g, '')) || 0;
+              myTotalEarned += price;
+              salesLog.push({
+                orderId: order._id,
+                photoTitle: photoObj?.title || "Macro Asset",
+                photoUrl: photoObj?.imageUrl,
+                buyerName: `${order.user?.firstName || 'Buyer'} ${order.user?.lastName || ''}`.trim(),
+                buyerEmail: order.user?.email || 'N/A',
+                amount: price,
+                date: order.createdAt
+              });
+            }
+          });
+        }
+      });
+    }
+
+    // 3. 🎯 फॉलबैक: अगर पुराने ऑर्डर्स डेटाबेस में नहीं बने थे, तो Users के Purchased Arrays से निकालें
+    if (salesLog.length === 0) {
+      const allBuyers = await User.find({}).populate('purchased').populate('purchasedPhotos');
+
+      allBuyers.forEach(buyer => {
+        // खुद की खरीद को इग्नोर करें
+        if (buyer._id.toString() === userIdStr) return;
+
+        const buyerPurchases = [...(buyer.purchased || []), ...(buyer.purchasedPhotos || [])];
+        const uniqueBuyerMap = new Map();
+
+        buyerPurchases.forEach(item => {
+          if (item && item._id) {
+            uniqueBuyerMap.set(item._id.toString(), item);
+          }
+        });
+
+        uniqueBuyerMap.forEach((photoObj, pId) => {
+          if (myPhotoIds.includes(pId)) {
+            const price = parseFloat(String(photoObj?.price || '0').replace(/[^0-9.]/g, '')) || 0;
+            myTotalEarned += price;
+            salesLog.push({
+              orderId: "LEGACY-" + pId.slice(-6).toUpperCase(),
+              photoTitle: photoObj.title || "Macro Asset",
+              photoUrl: photoObj.imageUrl,
+              buyerName: `${buyer.firstName} ${buyer.lastName || ''}`.trim(),
+              buyerEmail: buyer.email,
+              amount: price,
+              date: buyer.updatedAt || new Date()
+            });
+          }
+        });
+      });
+    }
+
+    return res.status(200).json({
+      totalEarned: myTotalEarned.toFixed(2),
+      soldItemsCount: salesLog.length,
+      salesLog
+    });
+
+  } catch (err) {
+    console.error("Creator Sales Ledger Error:", err);
+    return res.status(500).json({ message: "Error loading creator sales log" });
   }
 });
 

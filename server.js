@@ -2,7 +2,7 @@ require('dotenv').config(); // ⚡ Sabse upar load karein
 const express = require('express');
 const cors = require('cors');
 const mongoose = require('mongoose');
-
+const paymentRoutes = require('./routes/paymentRoutes');
 const app = express();
 
 // ⚡ CORS Setup (Local aur Live dono jagah chalne ke liye)
@@ -31,6 +31,7 @@ app.use('/api/photos', require('./routes/photoRoutes'));
 app.use('/api/admin', require('./routes/adminRoutes'));
 app.use('/api/users', require('./routes/userRoutes'));
 app.use('/api/orders', require('./routes/orderRoutes'));
+app.use('/api/payments', paymentRoutes);
 
 // Root Health Check Route (Deploy hone ke baad test karne ke liye)
 app.get('/', (req, res) => {

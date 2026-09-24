@@ -42,6 +42,11 @@ const userSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Photo'
   }],
+  // 🎯 मिसिंग फील्ड: इसे जोड़ दिया ताकि purchasedPhotos नाम से भी डेटाबेस में सेव हो सके
+  purchasedPhotos: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Photo'
+  }],
   // 💳 फोटोग्राफर का पेआउट सेटलमेंट वॉलेट एड्रेस
   upiId: {
     type: String,
@@ -51,5 +56,13 @@ const userSchema = new mongoose.Schema({
 }, {
   timestamps: true // इससे createdAt और updatedAt ऑटोमैटिक बन जाते हैं
 });
+
+// ⚡ वर्चुअल फील्ड: यूज़र का पूरा नाम निकालने के लिए
+userSchema.virtual('fullName').get(function () {
+  return `${this.firstName} ${this.lastName || ''}`.trim();
+});
+
+userSchema.set('toJSON', { virtuals: true });
+userSchema.set('toObject', { virtuals: true });
 
 module.exports = mongoose.model('User', userSchema);

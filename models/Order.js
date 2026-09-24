@@ -6,6 +6,7 @@ const OrderSchema = new mongoose.Schema({
     ref: 'User',
     required: true
   },
+  // 🛒 Item details (Photo reference aur numeric price ke sath)
   items: [{
     photoId: {
       type: mongoose.Schema.Types.ObjectId,
@@ -13,18 +14,35 @@ const OrderSchema = new mongoose.Schema({
       required: true
     },
     price: {
-      type: String,
+      type: Number,
       required: true
     }
   }],
+  // 📸 Direct Photos Array (Dashboard queries aur population ko fast banane ke liye)
+  photos: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Photo'
+  }],
   totalAmount: {
     type: Number,
-    required: true
+    required: true,
+    default: 0
+  },
+  // 🔒 Razorpay tracking IDs
+  razorpayOrderId: {
+    type: String,
+    trim: true,
+    default: ''
+  },
+  razorpayPaymentId: {
+    type: String,
+    trim: true,
+    default: ''
   },
   paymentStatus: {
     type: String,
     enum: ['pending', 'completed', 'failed'],
-    default: 'pending'
+    default: 'completed'
   }
 }, { timestamps: true });
 
